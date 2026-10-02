@@ -214,6 +214,15 @@ TROJAN_WS_URI = (
     "&sni=trojan-tls.example.test&alpn=h2%2Chttp%2F1.1&fp=chrome"
     "&insecure=1#TrojanWS"
 )
+TROJAN_GRPC_URI = (
+    "trojan://grpc-password@trojan-grpc.example.test:443"
+    "?security=tls&type=grpc&serviceName=fixture-service"
+    "&sni=trojan-grpc.example.test#TrojanGRPC"
+)
+MIHOMO_BASE64_URI_SUBSCRIPTION = TROJAN_GRPC_URI + "\n" + TROJAN_WS_URI + "\n"
+ENCODED_MIHOMO_BASE64_URI_SUBSCRIPTION = base64.urlsafe_b64encode(
+    MIHOMO_BASE64_URI_SUBSCRIPTION.encode()
+).decode().rstrip("=")
 TROJAN_KCP_URI = (
     "trojan://kcp-password@trojan-kcp.example.test:443"
     "?security=tls&type=kcp&headerType=wechat-video"
@@ -774,6 +783,15 @@ class FixtureHandler(BaseHTTPRequestHandler):
             content_type = "text/plain; charset=utf-8"
         elif request_path == "/mihomo-raw-subscription.txt":
             body = SUBSCRIPTION.encode()
+            content_type = "text/plain; charset=utf-8"
+        elif request_path == "/mihomo-base64-subscription.txt":
+            body = ENCODED_MIHOMO_BASE64_URI_SUBSCRIPTION.encode()
+            content_type = "text/plain; charset=utf-8"
+        elif request_path == "/mihomo-base64-non-node.txt":
+            body = base64.urlsafe_b64encode(b"plain text, not proxy nodes").rstrip(b"=")
+            content_type = "text/plain; charset=utf-8"
+        elif request_path == "/mihomo-invalid-base64.txt":
+            body = b"not!valid!base64"
             content_type = "text/plain; charset=utf-8"
         elif request_path == "/slow-subscription.txt":
             with type(self).counter_lock:
@@ -3573,6 +3591,55 @@ def parser_route_isolation_baseline(base_url: str, fixture_base: str) -> None:
             f"HTTP {status}: {output!r}"
         )
     assert_vary_header(headers, "User-Agent", "Clash fetched list response")
+
+    status, body, headers = request(
+        base_url,
+        "/sub",
+        {
+            "target": "clash",
+            "url": fixture_base + "/mihomo-base64-subscription.txt",
+            "config": DISABLE_RULEGEN_CONFIG,
+            "list": "true",
+        },
+    )
+    output = body.decode("utf-8", errors="replace")
+    if status != 200:
+        raise AssertionError(
+            "Mihomo-only Clash route did not expand a fetched Base64 URI list: "
+            f"HTTP {status}: {output!r}"
+        )
+    for expected in (
+        "TrojanGRPC",
+        "network: grpc",
+        "grpc-service-name: fixture-service",
+        "TrojanWS",
+        "network: ws",
+        "path: /socket",
+    ):
+        if expected not in output:
+            raise AssertionError(
+                "Base64 URI subscription lost Mihomo transport data: "
+                f"missing {expected!r}"
+            )
+    assert_vary_header(headers, "User-Agent", "Clash fetched Base64 response")
+
+    for fixture in ("mihomo-base64-non-node.txt", "mihomo-invalid-base64.txt"):
+        status, body, headers = request(
+            base_url,
+            "/sub",
+            {
+                "target": "clash",
+                "url": fixture_base + "/" + fixture,
+                "config": DISABLE_RULEGEN_CONFIG,
+                "list": "true",
+            },
+        )
+        if status != 400:
+            raise AssertionError(
+                f"Mihomo-only Clash route accepted invalid fixture {fixture}: "
+                f"HTTP {status}: {body!r}"
+            )
+        assert_vary_header(headers, "User-Agent", f"Clash rejected {fixture}")
 
 
 def parser_invocation_log_baseline(binary: Path, fixture_base: str) -> None:

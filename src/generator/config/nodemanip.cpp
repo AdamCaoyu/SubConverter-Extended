@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cctype>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -18,6 +20,7 @@
 #include "script/script_quickjs.h"
 #include "subexport.h"
 #include "utils/file_extra.h"
+#include "utils/base64/base64.h"
 #include "utils/force_max_cooperation.h"
 #include "utils/logger.h"
 #include "utils/map_extra.h"
@@ -156,6 +159,63 @@ static void appendMihomoNodes(std::vector<mihomo::ProxyNode> &source,
 
     nodes.emplace_back(std::move(node));
   }
+}
+
+static bool decodePlausibleBase64Subscription(const std::string &input,
+                                              std::string &decoded) {
+  std::string compact;
+  compact.reserve(input.size());
+  bool saw_padding = false;
+  size_t padding_count = 0;
+
+  for (unsigned char ch : input) {
+    if (std::isspace(ch))
+      continue;
+    if (ch == '=') {
+      saw_padding = true;
+      if (++padding_count > 2)
+        return false;
+    } else {
+      if (saw_padding || !(std::isalnum(ch) || ch == '+' || ch == '/' ||
+                           ch == '-' || ch == '_'))
+        return false;
+    }
+    compact.push_back(static_cast<char>(ch));
+  }
+
+  if (compact.size() < 4 || compact.size() % 4 == 1)
+    return false;
+
+  decoded = base64Decode(compact, true);
+  if (decoded.empty() || decoded.size() > compact.size())
+    return false;
+
+  // The retry is only for URI-list subscriptions. Mihomo still performs the
+  // authoritative protocol and field validation on the decoded content.
+  return decoded.find("://") != std::string::npos;
+}
+
+static std::vector<mihomo::ProxyNode>
+parseMihomoSubscriptionWithBase64Fallback(const std::string &subscription) {
+  std::exception_ptr raw_failure;
+  try {
+    auto nodes = mihomo::parseSubscription(subscription);
+    if (!nodes.empty())
+      return nodes;
+  } catch (...) {
+    raw_failure = std::current_exception();
+  }
+
+  std::string decoded;
+  if (!decodePlausibleBase64Subscription(subscription, decoded)) {
+    if (raw_failure)
+      std::rethrow_exception(raw_failure);
+    return {};
+  }
+
+  writeLog(LOG_LEVEL_VERBOSE,
+           "NODE_PARSER_RETRY parser=mihomo encoding=base64");
+  return mihomo::parseSubscription(decoded);
 }
 
 static bool isBrowserUA(const std::string &ua) {
@@ -489,7 +549,8 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID,
                  "NODE_PARSER_INVOKE parser=mihomo branch=sub");
 #ifdef USE_MIHOMO_PARSER
         try {
-          auto mihomo_nodes = mihomo::parseSubscription(strSub);
+          auto mihomo_nodes =
+              parseMihomoSubscriptionWithBase64Fallback(strSub);
           appendMihomoNodes(mihomo_nodes, nodes);
         } catch (const std::exception &e) {
           recordParserFailure();
@@ -589,7 +650,8 @@ int addNodes(std::string link, std::vector<Proxy> &allNodes, int groupID,
       strSub = link;
 #ifdef USE_MIHOMO_PARSER
       try {
-        auto mihomo_nodes = mihomo::parseSubscription(strSub);
+        auto mihomo_nodes =
+            parseMihomoSubscriptionWithBase64Fallback(strSub);
         std::vector<Proxy> parsed_nodes;
         appendMihomoNodes(mihomo_nodes, parsed_nodes);
         if (parsed_nodes.empty()) {
