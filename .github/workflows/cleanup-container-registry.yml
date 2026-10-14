@@ -2,8 +2,6 @@ name: 清理容器注册表临时镜像
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '23 3 * * *'
 
 permissions:
   actions: read
@@ -16,6 +14,9 @@ concurrency:
 
 jobs:
   cleanup:
+    # This inherited script targets the upstream Docker Hub and GHCR packages.
+    # Personal compatibility images use immutable compat-v* tags, not ci/buildcache tags.
+    if: github.repository == 'Aethersailor/SubConverter-Extended'
     name: "🧹 清理 Docker Hub 与 GHCR"
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -3,7 +3,9 @@
 services:
   subconverter-extended:
     container_name: SubConverter-Extended
-    image: aethersailor/subconverter-extended:latest
+    # Personal fork: keep the validated compatibility release pinned.
+    # Set SUBCONVERTER_IMAGE explicitly when deploying a tested newer release.
+    image: "${SUBCONVERTER_IMAGE:-ghcr.io/adamcaoyu/subconverter-extended:compat-v1.9.10-base64.1}"
     ports:
       # 保留既有的全接口端口发布，方便局域网设备直接访问；这表示“可能被外部访问”，
       # 但不能单凭该行判断服务已暴露公网，还需结合宿主防火墙、云安全组、NAT 和反代判断。
@@ -13,6 +15,12 @@ services:
       # host-only access, manually use "127.0.0.1:25500:25500/tcp" instead.
       - "25500:25500/tcp"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:25500/version"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     environment:
       TZ: Asia/Shanghai
       # 按需取消注释并修改；环境变量会覆盖 pref.toml 中的对应配置。
